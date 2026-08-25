@@ -1472,9 +1472,9 @@
             let micStream = null;
             let rafId = null;
             let blowStartTime = 0;
-            const BLOW_THRESHOLD = 0.78;       // volume (0..1) to count as a blow
-            const BLOW_DURATION_MS = 150;      // must stay above threshold this long
-            const EXTINGUISH_GAP_MS = 220;     // gap between candles going out
+            const BLOW_THRESHOLD = 0.18;       // volume (0..1) to count as a blow — tuned for laptop mics
+            const BLOW_DURATION_MS = 120;      // must stay above threshold this long
+            const EXTINGUISH_GAP_MS = 260;     // gap between candles going out
             let extinguishIndex = 0;
 
             function resetCandles() {
@@ -1495,6 +1495,7 @@
                 setTimeout(extinguishNextCandle, EXTINGUISH_GAP_MS);
             }
 
+            let meterLevel = 0; // smoothed meter value
             function startListening() {
                 if (rafId) cancelAnimationFrame(rafId);
                 const buf = new Uint8Array(analyser.fftSize);
@@ -1507,13 +1508,22 @@
                         sum += v * v;
                     }
                     const rms = Math.sqrt(sum / buf.length);
-                    // Update meter (visual feedback)
-                    micMeterFill.style.width = Math.min(100, rms * 220) + '%';
 
-                    if (rms > BLOW_THRESHOLD) {
+                    // Smooth meter: attack fast, release slow
+                    if (rms > meterLevel) meterLevel = meterLevel * 0.4 + rms * 0.6;
+                    else meterLevel = meterLevel * 0.85 + rms * 0.15;
+                    // Meter scaled so threshold fills the bar (~threshold / 0.45 spans 100%)
+                    const pct = Math.min(100, (meterLevel / 0.45) * 100);
+                    micMeterFill.style.width = pct + '%';
+                    micMeterFill.style.background = meterLevel > BLOW_THRESHOLD
+                        ? 'linear-gradient(90deg,#fbbf24,#fb7185)'
+                        : 'linear-gradient(90deg,#a78bfa,#f472b6)';
+
+                    if (meterLevel > BLOW_THRESHOLD) {
                         if (!blowStartTime) blowStartTime = performance.now();
                         if (performance.now() - blowStartTime >= BLOW_DURATION_MS) {
                             blowStartTime = 0;
+                            meterLevel = 0;
                             extinguishNextCandle();
                             return; // wait until all candles are out before resuming detection
                         }
@@ -1529,6 +1539,7 @@
                 if (rafId) cancelAnimationFrame(rafId);
                 rafId = null;
                 blowStartTime = 0;
+                meterLevel = 0;
                 micMeterFill.style.width = '0%';
                 if (micStream) {
                     micStream.getTracks().forEach((t) => t.stop());
@@ -1546,6 +1557,10 @@
                 resetCandles();
                 cakeNote.style.display = 'none';
                 cakeModal.classList.add('open');
+                // Always allow tapping a candle to extinguish (works with or without mic)
+                candlesRoot.querySelectorAll('.candle').forEach((c) => {
+                    c.addEventListener('click', candleClickHandler, { once: true });
+                });
 
                 try {
                     micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1556,11 +1571,8 @@
                     source.connect(analyser);
                     startListening();
                 } catch (err) {
-                    // Mic denied (or unsupported) → fall back to click-to-blow
+                    // Mic denied (or unsupported) → show the manual-blow note
                     cakeNote.style.display = 'inline-block';
-                    candlesRoot.querySelectorAll('.candle').forEach((c) => {
-                        c.addEventListener('click', candleClickHandler, { once: true });
-                    });
                 }
             }
 
